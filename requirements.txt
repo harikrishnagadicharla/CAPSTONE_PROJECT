@@ -9,5 +9,4 @@ google-generativeai
 torch
 scikit-learn
 numpy
-langchain_community
-runtime.txt
+langchain-community
