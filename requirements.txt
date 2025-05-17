@@ -1,0 +1,13 @@
+streamlit
+langchain
+faiss-cpu
+transformers
+huggingface-hub
+pdfplumber
+python-dotenv
+google-generativeai
+torch
+scikit-learn
+numpy
+langchain_community
+runtime.txt
