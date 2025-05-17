@@ -11,3 +11,4 @@ scikit-learn
 numpy
 langchain-community
 fpdf
+sentence-transformers
