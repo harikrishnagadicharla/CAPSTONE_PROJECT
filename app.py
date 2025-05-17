@@ -10,7 +10,7 @@ from fpdf import FPDF
 
 # Load environment variables
 load_dotenv()
-genai.configure(api_key=os.getenv("AIzaSyDJnXjUqMrR4txh3z1U29Gzpqb0nGo2vJg"))
+genai.configure(api_key=os.getenv("AIzaSyDJnXjUqMrR4txh3z1U29Gzpqb0nGo2vJg"))  # Make sure your .env has GOOGLE_API_KEY
 
 FAISS_INDEX_DIR = "compliance_faiss_index"
 METADATA_FILE = "compliance_doc_metadata.pkl"
@@ -49,10 +49,9 @@ def save_response_to_pdf(response_text, filename="gemini_compliance_report.pdf")
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
 
-    # ✅ Add DejaVu font
-    font_path = r"C:\Users\91798\Downloads\DejaVuSans.ttf"  # Make sure this path is correct
+    font_path = "DejaVuSans.ttf"  # Make sure this file is in the project folder
     if not os.path.exists(font_path):
-        raise FileNotFoundError("DejaVuSans.ttf not found. Download and place it in your working directory.")
+        raise FileNotFoundError("DejaVuSans.ttf not found. Please add it to your project folder.")
 
     pdf.add_font("DejaVu", "", font_path, uni=True)
     pdf.set_font("DejaVu", "", 12)
