@@ -10,12 +10,16 @@ from fpdf import FPDF
 
 # Load environment variables
 load_dotenv()
-genai.configure(api_key=os.getenv("AIzaSyDJnXjUqMrR4txh3z1U29Gzpqb0nGo2vJg"))  # Make sure your .env has GOOGLE_API_KEY
+genai.configure(api_key=os.getenv("AIzaSyDJnXjUqMrR4txh3z1U29Gzpqb0nGo2vJg"))
 
 FAISS_INDEX_DIR = "compliance_faiss_index"
 METADATA_FILE = "compliance_doc_metadata.pkl"
 
+# Initialize Gemini model
 model = genai.GenerativeModel("gemini-1.5-flash")
+
+st.title("📑 Industrial Compliance Assistant (RAG + Gemini)")
+st.markdown("Ask questions based on compliance audit reports.")
 
 @st.cache_resource
 def load_db():
@@ -27,62 +31,12 @@ def load_db():
 
 db, metadata_list = load_db()
 
-st.title("📑 Industrial Compliance Assistant (RAG + Gemini)")
-st.markdown("Ask questions based on compliance audit reports.")
+# ------------------ Agent 1: Retriever Agent ------------------
+def retriever_agent(query, k=5):
+    return db.similarity_search(query, k=k)
 
-query = st.text_input("🔍 Ask your question:")
-
-def clean_markdown_headers(text):
-    text = re.sub(r'#+ ', '', text)
-    text = re.sub(r'\*\*(.*?)\*\*:', r'\1:', text)
-    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-    return text
-
-def format_result_for_display(text):
-    text = re.sub(r'#+ ', '', text)
-    text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
-    text = text.replace("\n", "<br>")
-    return text
-
-def save_response_to_pdf(response_text, filename="gemini_compliance_report.pdf"):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
-
-    font_path = "DejaVuSans.ttf"  # Make sure this file is in the project folder
-    if not os.path.exists(font_path):
-        raise FileNotFoundError("DejaVuSans.ttf not found. Please add it to your project folder.")
-
-    pdf.add_font("DejaVu", "", font_path, uni=True)
-    pdf.set_font("DejaVu", "", 12)
-
-    for line in response_text.split('\n'):
-        pdf.multi_cell(0, 10, line)
-
-    pdf.output(filename)
-    return filename
-
-def get_compliance_response(query, k=5):
-    relevant_keywords = [
-        "audit", "compliance", "non-conformance", "iso", "recommendation",
-        "corrective", "plant", "report", "deadline", "NC", "standard",
-        "summary", "factory", "flag"
-    ]
-    if not any(word in query.lower() for word in relevant_keywords):
-        return """
-❌ **Out-of-Scope Question Detected**
-
-This assistant is designed to help analyze and summarize **compliance audit reports** (e.g., ISO 9001, non-conformities, recommendations, deadlines).
-
-Your question appears to be unrelated to that scope.
-
-🔎 Try asking:
-- What were the non-compliance flags in the last audit?
-- What corrective actions were suggested?
-- What is the compliance percentage for Plant A?
-"""
-
-    docs = db.similarity_search(query, k=k)
+# ------------------ Agent 2: Metadata Extractor ------------------
+def metadata_extractor_agent(docs):
     context_texts = []
     metadata_texts = []
 
@@ -93,7 +47,10 @@ Your question appears to be unrelated to that scope.
             f"- File: {meta.get('source_file')}, Type: {meta.get('document_type')}, "
             f"Date: {meta.get('date')}, Factory: {meta.get('factory_id')}"
         )
+    return context_texts, metadata_texts
 
+# ------------------ Agent 3: Compliance Analyzer ------------------
+def compliance_analysis_agent(query, context_texts, metadata_texts):
     prompt = f"""
 You are a regulatory compliance assistant.
 
@@ -119,16 +76,64 @@ Respond in the following format:
 **Audit Summary:** <summary with compliance % and actions>
 ---
 """
-
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
         return f"❌ Error: {e}"
 
+# ------------------ Agent 4: Formatter Agent ------------------
+def format_result_for_display(text):
+    text = re.sub(r'#+ ', '', text)
+    text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
+    text = text.replace("\n", "<br>")
+    return text
+
+# ------------------ Agent 5: PDF Export Agent ------------------
+def save_response_to_pdf(response_text, filename="gemini_compliance_report.pdf"):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    font_path = "DejaVuSans.ttf"
+    if not os.path.exists(font_path):
+        raise FileNotFoundError("DejaVuSans.ttf not found. Please add it to your project folder.")
+
+    pdf.add_font("DejaVu", "", font_path, uni=True)
+    pdf.set_font("DejaVu", "", 12)
+
+    for line in response_text.split('\n'):
+        pdf.multi_cell(0, 10, line)
+
+    pdf.output(filename)
+    return filename
+
+# ------------------ Orchestration: Agentic Flow ------------------
+def handle_user_query(query):
+    # Basic scope filtering
+    keywords = ["audit", "compliance", "non-conformance", "iso", "recommendation", "corrective", "plant", "report", "deadline", "NC", "standard", "summary", "factory", "flag"]
+    if not any(word in query.lower() for word in keywords):
+        return """
+❌ **Out-of-Scope Question Detected**
+
+This assistant is designed to help analyze and summarize **compliance audit reports** (e.g., ISO 9001, non-conformities, recommendations, deadlines).
+
+🔎 Try asking:
+- What were the non-compliance flags in the last audit?
+- What corrective actions were suggested?
+- What is the compliance percentage for Plant A?
+"""
+
+    docs = retriever_agent(query)
+    context_texts, metadata_texts = metadata_extractor_agent(docs)
+    return compliance_analysis_agent(query, context_texts, metadata_texts)
+
+# ------------------ Streamlit Frontend ------------------
+query = st.text_input("🔍 Ask your question:")
+
 if query:
     with st.spinner("🔍 Analyzing documents and generating structured response..."):
-        result = get_compliance_response(query)
+        result = handle_user_query(query)
 
         st.markdown("### 📘 Gemini's Compliance Report")
         cleaned_result = format_result_for_display(result)
