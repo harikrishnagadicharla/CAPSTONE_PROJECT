@@ -5,51 +5,123 @@ import streamlit as st
 from dotenv import load_dotenv
 from langchain.vectorstores import FAISS
 from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.document_loaders import PyPDFLoader, UnstructuredExcelLoader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.docstore.document import Document
 import google.generativeai as genai
 from fpdf import FPDF
+from datetime import datetime
+import tempfile
 
-# Load environment variables
+# --- Configuration ---
 load_dotenv()
-genai.configure(api_key=os.getenv("AIzaSyDJnXjUqMrR4txh3z1U29Gzpqb0nGo2vJg"))
-
+genai.configure(api_key=os.getenv("AIzaSyDJnXjUqMrR4txh3z1U29Gzpqb0nGo2vJg"))  # Use .env for safety
 FAISS_INDEX_DIR = "compliance_faiss_index"
 METADATA_FILE = "compliance_doc_metadata.pkl"
 
-# Initialize Gemini model
 model = genai.GenerativeModel("gemini-1.5-flash")
+embeddings = HuggingFaceEmbeddings()
+text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
 
-st.title("📑 Industrial Compliance Assistant (RAG + Gemini)")
-st.markdown("Ask questions based on compliance audit reports.")
+# --- UI Setup ---
+st.title("📑 Industrial Compliance Assistant")
+st.markdown("Upload files or metadata and ask compliance-related questions.")
 
+# --- Load or Initialize DB ---
 @st.cache_resource
-def load_db():
-    embeddings = HuggingFaceEmbeddings()
-    db = FAISS.load_local(FAISS_INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
-    with open(METADATA_FILE, "rb") as f:
-        metadata = pickle.load(f)
+def load_or_create_db():
+    if os.path.exists(FAISS_INDEX_DIR):
+        db = FAISS.load_local(FAISS_INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
+        if os.path.exists(METADATA_FILE):
+            with open(METADATA_FILE, "rb") as f:
+                metadata = pickle.load(f)
+        else:
+            metadata = []
+    else:
+        db = FAISS.from_documents([], embeddings)
+        metadata = []
     return db, metadata
 
-db, metadata_list = load_db()
+db, metadata_list = load_or_create_db()
 
-# ------------------ Agent 1: Retriever Agent ------------------
+# --- File Upload Section ---
+st.header("📤 Upload Files")
+uploaded_files = st.file_uploader("Upload PDFs or Excel Sheets", accept_multiple_files=True, key="file_upload")
+if uploaded_files:
+    new_documents = []
+    for file in uploaded_files:
+        filename = file.name
+        filetype = filename.split('.')[-1].lower()
+
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(file.getvalue())
+            tmp_path = tmp_file.name
+
+        if filetype == "pdf":
+            loader = PyPDFLoader(tmp_path)
+        elif filetype in ["xls", "xlsx"]:
+            loader = UnstructuredExcelLoader(tmp_path)
+        else:
+            st.warning(f"Unsupported file type: {filename}")
+            continue
+
+        docs = loader.load()
+        split_docs = text_splitter.split_documents(docs)
+
+        for doc in split_docs:
+            doc.metadata.update({
+                "source_file": filename,
+                "document_type": filetype.upper(),
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "factory_id": "ManualUpload",
+                "custom_note": ""
+            })
+
+        new_documents.extend(split_docs)
+
+    if new_documents:
+        db.add_documents(new_documents)
+        metadata_list.extend([doc.metadata for doc in new_documents])
+
+        db.save_local(FAISS_INDEX_DIR)
+        with open(METADATA_FILE, "wb") as f:
+            pickle.dump(metadata_list, f)
+
+        st.success("✅ Files uploaded and indexed successfully!")
+
+# --- Manual Metadata Input Section ---
+st.header("🌐 Enter Metadata Directly")
+manual_meta = st.text_area("Enter audit notes, summaries, or links (treated as searchable text)", key="meta_input")
+if manual_meta:
+    doc = Document(page_content=manual_meta, metadata={
+        "source_file": "ManualMetadataEntry",
+        "document_type": "TEXT",
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "factory_id": "MetaEntry",
+        "custom_note": "UserInput"
+    })
+    db.add_documents([doc])
+    metadata_list.append(doc.metadata)
+    db.save_local(FAISS_INDEX_DIR)
+    with open(METADATA_FILE, "wb") as f:
+        pickle.dump(metadata_list, f)
+    st.success("✅ Metadata saved successfully!")
+
+# --- Agents ---
 def retriever_agent(query, k=5):
     return db.similarity_search(query, k=k)
 
-# ------------------ Agent 2: Metadata Extractor ------------------
 def metadata_extractor_agent(docs):
-    context_texts = []
-    metadata_texts = []
-
+    context_texts, metadata_texts = [], []
     for d in docs:
         context_texts.append(d.page_content)
         meta = d.metadata
         metadata_texts.append(
             f"- File: {meta.get('source_file')}, Type: {meta.get('document_type')}, "
-            f"Date: {meta.get('date')}, Factory: {meta.get('factory_id')}"
+            f"Date: {meta.get('date')}, Factory: {meta.get('factory_id')}, Note: {meta.get('custom_note', '')}"
         )
     return context_texts, metadata_texts
 
-# ------------------ Agent 3: Compliance Analyzer ------------------
 def compliance_analysis_agent(query, context_texts, metadata_texts):
     prompt = f"""
 You are a regulatory compliance assistant.
@@ -82,14 +154,12 @@ Respond in the following format:
     except Exception as e:
         return f"❌ Error: {e}"
 
-# ------------------ Agent 4: Formatter Agent ------------------
 def format_result_for_display(text):
     text = re.sub(r'#+ ', '', text)
     text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', text)
     text = text.replace("\n", "<br>")
     return text
 
-# ------------------ Agent 5: PDF Export Agent ------------------
 def save_response_to_pdf(response_text, filename="gemini_compliance_report.pdf"):
     pdf = FPDF()
     pdf.add_page()
@@ -97,7 +167,7 @@ def save_response_to_pdf(response_text, filename="gemini_compliance_report.pdf")
 
     font_path = "DejaVuSans.ttf"
     if not os.path.exists(font_path):
-        raise FileNotFoundError("DejaVuSans.ttf not found. Please add it to your project folder.")
+        raise FileNotFoundError("DejaVuSans.ttf not found.")
 
     pdf.add_font("DejaVu", "", font_path, uni=True)
     pdf.set_font("DejaVu", "", 12)
@@ -108,33 +178,30 @@ def save_response_to_pdf(response_text, filename="gemini_compliance_report.pdf")
     pdf.output(filename)
     return filename
 
-# ------------------ Orchestration: Agentic Flow ------------------
 def handle_user_query(query):
-    # Basic scope filtering
     keywords = ["audit", "compliance", "non-conformance", "iso", "recommendation", "corrective", "plant", "report", "deadline", "NC", "standard", "summary", "factory", "flag"]
     if not any(word in query.lower() for word in keywords):
         return """
 ❌ **Out-of-Scope Question Detected**
 
-This assistant is designed to help analyze and summarize **compliance audit reports** (e.g., ISO 9001, non-conformities, recommendations, deadlines).
+This assistant is designed to help analyze and summarize **compliance audit reports**.
 
 🔎 Try asking:
 - What were the non-compliance flags in the last audit?
 - What corrective actions were suggested?
 - What is the compliance percentage for Plant A?
 """
-
     docs = retriever_agent(query)
     context_texts, metadata_texts = metadata_extractor_agent(docs)
     return compliance_analysis_agent(query, context_texts, metadata_texts)
 
-# ------------------ Streamlit Frontend ------------------
-query = st.text_input("🔍 Ask your question:")
+# --- Query Section ---
+st.header("🔍 Ask Your Compliance Question")
+query = st.text_input("Enter your question:")
 
 if query:
-    with st.spinner("🔍 Analyzing documents and generating structured response..."):
+    with st.spinner("Analyzing your documents..."):
         result = handle_user_query(query)
-
         st.markdown("### 📘 Gemini's Compliance Report")
         cleaned_result = format_result_for_display(result)
         st.markdown(cleaned_result, unsafe_allow_html=True)
@@ -146,6 +213,7 @@ if query:
         except Exception as e:
             st.error(f"PDF Generation Error: {e}")
 
+# --- Examples ---
 with st.expander("💡 Example Questions You Can Ask"):
     st.markdown("""
 - What corrective actions were recommended, and what are their deadlines?
