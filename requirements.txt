@@ -1,7 +1,10 @@
-streamlit
-faiss-cpu
-huggingface-hub
-sentence-transformers
-transformers
-pillow
-pdfplumber
+pip install streamlit
+pip install faiss-cpu
+pip install langchain
+pip install huggingface-hub
+pip install sentence-transformers
+pip install transformers
+pip install google-generativeai
+pip install pdfkit
+pip install matplotlib
+pip install pillow
